@@ -13,52 +13,26 @@ st.set_page_config(
 
 # --- SIDEBAR: BRANDING & SETUP ---
 with st.sidebar:
-    # REPLACE WITH YOUR LOGO URL
     st.image("https://placehold.co/200x80/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Setup")
     api_key = st.text_input("Enter Google API Key", type="password", help="Your private Gemini API key.")
     st.markdown("---")
     st.markdown("**How to use:**")
-    st.markdown("1. Upload your **Database.csv**.")
-    st.markdown("2. Enter deal keywords.")
-    st.markdown("3. Click **Generate Summary**.")
+    st.markdown("1. Upload **Foster Finance Database.csv**")
+    st.markdown("2. Enter deal details (e.g., names, amounts, goal).")
+    st.markdown("3. Click **Generate**.")
 
-# --- HELPER: SMART MODEL SELECTOR (The Fix) ---
+# --- HELPER: SMART MODEL SELECTOR ---
 def get_best_model(api_key):
-    """
-    Automatically finds the working model name for this specific API Key.
-    Prevents 'NotFound' errors.
-    """
     genai.configure(api_key=api_key)
     try:
-        # Ask Google what models are available
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priority List (Try these first)
-        priorities = [
-            'models/gemini-1.5-flash-001',
-            'models/gemini-1.5-flash',
-            'models/gemini-1.5-flash-latest',
-            'models/gemini-1.5-pro',
-            'models/gemini-pro'
-        ]
-        
-        # 1. Check for exact match in priority list
+        priorities = ['models/gemini-1.5-flash-001', 'models/gemini-1.5-flash']
         for p in priorities:
-            if p in models:
-                return p
-        
-        # 2. Fallback: Find anything with "flash" in the name
-        for m in models:
-            if "flash" in m:
-                return m
-                
-        # 3. Last Resort: First available model
+            if p in models: return p
         return models[0] if models else 'models/gemini-1.5-flash'
-        
-    except Exception:
-        # If listing fails, default to the safest bet
+    except:
         return 'models/gemini-1.5-flash-001'
 
 # --- MAIN APP LOGIC ---
@@ -71,23 +45,16 @@ uploaded_file = st.file_uploader("📂 Step 1: Upload Foundation Database (CSV)"
 
 if uploaded_file is not None:
     try:
-        # Load Data
         df = pd.read_csv(uploaded_file)
         
         # --- STRICT HEADER CHECK ---
-        required_columns = [
-            'Client Requirements', 
-            'Client Objectives', 
-            'Product Features', 
-            'Why this Product was Selected'
-        ]
-        
+        required_columns = ['Client Requirements', 'Client Objectives', 'Product Features', 'Why this Product was Selected']
         missing = [col for col in required_columns if col not in df.columns]
         
         if missing:
-            st.error(f"❌ Error: The uploaded CSV is missing required headers: {', '.join(missing)}")
+            st.error(f"❌ Error: CSV missing headers: {', '.join(missing)}")
         else:
-            st.success(f"✅ Database Loaded: {len(df)} records available.")
+            st.success(f"✅ Database Loaded: {len(df)} records.")
             
             # 2. USER INPUT
             st.markdown("---")
@@ -95,81 +62,74 @@ if uploaded_file is not None:
             
             col1, col2 = st.columns([3, 1])
             with col1:
-                user_input = st.text_area("Deal Summary / Keywords", height=100, 
-                                        placeholder="E.g., Client seeks to refinance investment property portfolio...")
+                user_input = st.text_area("Deal Scenario", height=100, 
+                                        placeholder="e.g., Federico (Riccy) and Tristan have purchased 2/6 Boronia Street...")
             with col2:
-                st.markdown("<br>", unsafe_allow_html=True) # Spacer
-                generate_btn = st.button("✨ Generate Summary", type="primary", use_container_width=True)
+                st.markdown("<br>", unsafe_allow_html=True)
+                generate_btn = st.button("✨ Generate", type="primary", use_container_width=True)
 
             # 3. AI GENERATION LOGIC
             if generate_btn and api_key and user_input:
                 
-                # --- A. SEARCH ---
-                mask = pd.Series([False] * len(df))
-                for col in df.columns:
-                    mask |= df[col].astype(str).str.lower().str.contains(user_input.lower(), na=False)
+                # --- A. SMART MATCHING (Keyword Overlap Score) ---
+                # We rank rows by how many words they share with the user input
+                user_terms = set(user_input.lower().split())
                 
-                matches = df[mask]
-                
-                if len(matches) == 0:
-                    st.warning("⚠️ No exact matches found. Generating based on credit logic.")
-                    context_data = "No specific database match. Use general credit structuring principles."
-                else:
-                    st.info(f"🔍 Found {len(matches)} similar past deals. Synthesizing...")
-                    context_data = matches[required_columns].head(3).to_markdown(index=False)
+                def calculate_score(row):
+                    row_text = str(row.values).lower()
+                    # Count how many user keywords appear in this row
+                    return sum(1 for term in user_terms if term in row_text)
 
-                # --- B. PROMPT ENGINEERING ---
+                df['match_score'] = df.apply(calculate_score, axis=1)
+                matches = df.sort_values(by='match_score', ascending=False).head(3)
+                
+                # Format the reference data for the AI
+                context_data = matches[required_columns].to_markdown(index=False)
+
+                # --- B. PROMPT ENGINEERING (Human Tone) ---
                 try:
-                    # 1. Auto-Select the Best Model
                     model_name = get_best_model(api_key)
-                    # st.caption(f"🤖 Using Engine: {model_name}") # Optional: Show user which model picked
-                    
                     genai.configure(api_key=api_key)
                     model = genai.GenerativeModel(model_name)
                     
                     prompt = f"""
-                    Role: Senior Credit Analyst for Foster Finance.
-                    Task: Write a 4-point Credit Proposal.
+                    Role: You are a Credit Analyst at Foster Finance.
+                    Task: Write a deal summary by ADAPTING the style of the Reference Database to the User's new scenario.
 
-                    USER INPUT: "{user_input}"
-                    HISTORY: {context_data}
+                    USER INPUT (New Deal Details): 
+                    "{user_input}"
+
+                    REFERENCE DATABASE (Best Matches to mimic):
+                    {context_data}
 
                     INSTRUCTIONS:
-                    Synthesize exactly 4 bullets into two sections.
-                    
-                    SECTION 1: REQUIREMENTS & OBJECTIVES
-                    * **Bullet 1:** Synthesize 'Client Requirements' (Column F).
-                    * **Bullet 2:** Synthesize 'Client Objectives' (Column G).
-                    * **Bullet 3:** Synthesize 'Product Features' (Column H).
+                    1. **Format:** Output a numbered list (1, 2, 3) followed by a separate paragraph for the 4th point.
+                    2. **Style:** Use plain, professional English. Mimic the sentence structure of the Reference Database exactly.
+                    3. **No Headers:** Do NOT use bold labels like **Requirement:** or **Objective:**. Start the sentence immediately.
+                    4. **Adaptation:** Use the Reference rows as a template, but swap in the User's specific names (e.g., Federico), addresses, and amounts.
 
-                    SECTION 2: PRODUCT SELECTION
-                    * **Bullet 4:** Synthesize 'Why this Product was Selected' (Column I).
+                    OUTPUT STRUCTURE:
+                    1. [Sentence mapping to 'Client Requirements']
+                    2. [Sentence mapping to 'Client Objectives']
+                    3. [Sentence mapping to 'Product Features']
 
-                    Format: Strict Markdown.
+                    [Sentence mapping to 'Why this Product was Selected']
                     """
                     
-                    # Robust Retry Logic
-                    @retry(
-                        retry=retry_if_exception_type(exceptions.ResourceExhausted),
-                        stop=stop_after_attempt(3), 
-                        wait=wait_exponential(multiplier=1, min=2, max=10)
-                    )
-                    def run_ai():
-                        return model.generate_content(prompt).text
-                        
-                    with st.spinner("🤖 Dr. Foster is analyzing..."):
-                        response_text = run_ai()
-                        st.markdown("### 📄 Generated Proposal")
+                    with st.spinner("Writing proposal..."):
+                        response = model.generate_content(prompt)
+                        st.markdown("### 📄 Proposal")
                         st.markdown("---")
-                        st.markdown(response_text)
-                        st.success("Analysis Complete!")
+                        st.markdown(response.text)
                         
                 except Exception as e:
-                    st.error(f"Analysis Failed: {e}")
-                    st.error("Tip: Check if your API Key has 'Generative Language API' enabled in Google Cloud Console.")
+                    st.error(f"Error: {e}")
 
             elif generate_btn and not api_key:
-                st.warning("⚠️ Please enter your API Key in the sidebar.")
+                st.warning("⚠️ Enter API Key in sidebar.")
 
     except Exception as e:
         st.error(f"File Error: {e}")
+
+else:
+    st.info("👆 Upload your CSV to begin.")
