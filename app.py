@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. CUSTOM CSS (The Premium Branding) ---
+# --- 2. CUSTOM CSS ---
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { background-color: #0e2f44; }
@@ -19,18 +19,16 @@ st.markdown("""
         h1 { color: #0e2f44; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; }
         .stTextArea textarea { background-color: #f8f9fa; border: 1px solid #dcdcdc; }
         .stSuccess { background-color: #d4edda; color: #155724; }
-        /* Professional Mic Button styling */
-        button[kind="secondary"] { border-radius: 20px; border: 1px solid #ccc; }
+        /* Make the mic button prominent */
+        button[kind="secondary"] { 
+            border-radius: 20px; 
+            border: 1px solid #ccc; 
+            width: 100%;
+        }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. SESSION STATE INITIALIZATION ---
-if 'deal_text' not in st.session_state:
-    st.session_state.deal_text = ""
-if 'mic_key' not in st.session_state:
-    st.session_state.mic_key = 0  # Helper to reset the mic button
-
-# --- 4. CACHED HELPER FUNCTIONS ---
+# --- 3. CACHED HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600)
 def get_best_model(api_key):
@@ -61,14 +59,32 @@ def transcribe_audio(audio_bytes, api_key):
     except Exception as e:
         return f"Error: {e}"
 
+# --- 4. CALLBACK FOR VOICE ---
+# This function runs immediately when the recording stops
+def voice_callback():
+    if st.session_state.my_recorder_output:
+        audio_bytes = st.session_state.my_recorder_output['bytes']
+        
+        # Check API Key before transcribing
+        if st.session_state.api_key_input:
+            # Transcribe
+            text = transcribe_audio(audio_bytes, st.session_state.api_key_input)
+            
+            # DIRECTLY UPDATE THE TEXT AREA WIDGET STATE
+            # This forces the text box to show the new text immediately
+            st.session_state.deal_input_area = text
+        else:
+            st.warning("⚠️ Please enter API Key first!")
+
 # --- 5. SIDEBAR SETUP ---
 with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
-    api_key = st.text_input("Google API Key", type="password", help="Enter Gemini API Key")
+    # Bind API Key to session state so callback can access it
+    st.text_input("Google API Key", type="password", key="api_key_input", help="Enter Gemini API Key")
     st.markdown("---")
-    st.info("🎙️ **Voice Feature:** Click 'Record', speak your deal, then click 'Stop'.")
+    st.info("🎙️ **Voice Tip:** Speak clearly. The text will appear automatically when you click 'Stop'.")
 
 # --- 6. MAIN APPLICATION LOGIC ---
 
@@ -81,7 +97,6 @@ if uploaded_file is not None:
     try:
         df = load_database(uploaded_file)
         
-        # Header Validation
         required_columns = ['Client Requirements', 'Client Objectives', 'Product Features', 'Why this Product was Selected']
         missing = [col for col in required_columns if col not in df.columns]
         
@@ -96,35 +111,29 @@ if uploaded_file is not None:
             
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                # Using dynamic key to force reset after recording
-                audio = mic_recorder(
+                # Using the callback ensures the update happens BEFORE the page reloads
+                mic_recorder(
                     start_prompt="Record", 
                     stop_prompt="Stop", 
-                    key=f'recorder_{st.session_state.mic_key}'
+                    key='my_recorder_output',
+                    on_stop=voice_callback  # This is the magic link
                 )
-                
-                if audio and api_key:
-                    with st.spinner("Transcribing..."):
-                        text = transcribe_audio(audio['bytes'], api_key)
-                        
-                        # Update text and force a reset of the mic component
-                        st.session_state.deal_text = text
-                        st.session_state.mic_key += 1 
-                        st.rerun()
 
             with col_text:
+                # We give the text area a specific key 'deal_input_area'
+                # The callback updates this key directly
                 user_input = st.text_area(
                     "📝 Deal Scenario / Keywords", 
-                    value=st.session_state.deal_text,
                     height=120, 
-                    placeholder="e.g., Federico and Tristan purchasing in Wollstonecraft for $2.1M..."
+                    key="deal_input_area", 
+                    placeholder="Type here OR use the Voice Button... (Text will appear after you click Stop)"
                 )
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
-            # --- AI LOGIC (Surgical Fix Preserved) ---
-            if generate_btn and api_key and user_input:
+            # --- AI LOGIC (Surgical Logic Preserved) ---
+            if generate_btn and st.session_state.api_key_input and user_input:
                 
                 # A. SMART MATCHING
                 user_terms = set(user_input.lower().replace(',', '').split())
@@ -138,9 +147,9 @@ if uploaded_file is not None:
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING
-                model_name = get_best_model(api_key)
-                genai.configure(api_key=api_key)
+                # B. PROMPT ENGINEERING (The "Surgical Fix" you approved)
+                model_name = get_best_model(st.session_state.api_key_input)
+                genai.configure(api_key=st.session_state.api_key_input)
                 model = genai.GenerativeModel(model_name)
                 
                 prompt = f"""
@@ -182,8 +191,8 @@ if uploaded_file is not None:
                 except Exception as e:
                     st.error(f"Analysis Error: {e}")
 
-            elif generate_btn and not api_key:
-                st.warning("⚠️ Please enter your API Key.")
+            elif generate_btn and not st.session_state.api_key_input:
+                st.warning("⚠️ Please enter your API Key in the sidebar.")
 
     except Exception as e:
         st.error(f"File Error: {e}")
