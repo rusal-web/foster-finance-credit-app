@@ -19,13 +19,11 @@ st.markdown("""
         h1 { color: #0e2f44; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; }
         .stTextArea textarea { background-color: #f8f9fa; border: 1px solid #dcdcdc; }
         .stSuccess { background-color: #d4edda; color: #155724; }
-        /* Fix button width */
         div[data-testid="stVerticalBlock"] > button { width: 100%; }
     </style>
 """, unsafe_allow_html=True)
 
 # --- 3. SESSION STATE ---
-# 'deal_input_text' is the Master Key that syncs the Voice and the Text Box
 if 'deal_input_text' not in st.session_state:
     st.session_state.deal_input_text = ""
 if 'mic_key' not in st.session_state:
@@ -34,24 +32,22 @@ if 'mic_key' not in st.session_state:
 # --- 4. HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600)
-def get_best_model(api_key):
+def get_high_limit_model(api_key):
+    """
+    Forces the use of Gemini 1.5 Flash which typically has 1,500 requests/day free limit.
+    """
     genai.configure(api_key=api_key)
-    try:
-        models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priorities = ['models/gemini-1.5-flash-001', 'models/gemini-1.5-flash']
-        for p in priorities:
-            if p in models: return p
-        return models[0] if models else 'models/gemini-1.5-flash'
-    except:
-        return 'models/gemini-1.5-flash-001'
+    # We strictly force the older, stable model to avoid the 20/day limit of new models
+    return 'models/gemini-1.5-flash'
 
 @st.cache_data
 def load_database(file):
     return pd.read_csv(file)
 
-def transcribe_audio(audio_bytes, api_key, model_name):
+def transcribe_audio(audio_bytes, api_key):
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    # Force 1.5 Flash for transcription to save quota
+    model = genai.GenerativeModel('models/gemini-1.5-flash')
     try:
         response = model.generate_content([
             "Transcribe this audio exactly. It is a credit deal summary. Do not summarize.",
@@ -68,7 +64,7 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     st.text_input("Google API Key", type="password", key="api_key_input", help="Enter Gemini API Key")
     st.markdown("---")
-    st.info("🎙️ **Voice Workflow:**\n1. Record & Stop\n2. Review Text\n3. Click Generate")
+    st.info("🎙️ **Workflow:** Record -> Check Text -> Click Generate")
 
 # --- 6. MAIN LOGIC ---
 
@@ -92,60 +88,40 @@ if uploaded_file is not None:
 
             col_mic, col_text = st.columns([1, 4])
             
-            # --- PRE-CALCULATE MODEL ---
-            valid_model_name = 'models/gemini-1.5-flash'
-            if st.session_state.api_key_input:
-                valid_model_name = get_best_model(st.session_state.api_key_input)
-
-            # --- VOICE LOGIC (Fixed "Double Button" Bug) ---
+            # --- VOICE LOGIC ---
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                
-                # 1. Use a strict container to wipe old buttons
                 mic_container = st.empty()
-                
                 with mic_container:
-                    # 2. Render mic with dynamic key
                     audio = mic_recorder(
                         start_prompt="Record", 
                         stop_prompt="Stop", 
                         key=f"recorder_{st.session_state.mic_key}"
                     )
                 
-                # 3. Handle Audio Capture
                 if audio:
                     if st.session_state.api_key_input:
                         with st.spinner("Transcribing..."):
                             new_text = transcribe_audio(
                                 audio['bytes'], 
-                                st.session_state.api_key_input, 
-                                valid_model_name
+                                st.session_state.api_key_input
                             )
-                            
                             if new_text:
-                                # Update the MASTER TEXT STATE
                                 st.session_state.deal_input_text = new_text
-                                # Increment key to force a fresh mic button next time
                                 st.session_state.mic_key += 1
-                                # Rerun to show text in the box
                                 st.rerun()
                     elif not st.session_state.api_key_input:
                         st.warning("⚠️ Enter API Key!")
 
             # --- TEXT BOX LOGIC ---
             with col_text:
-                # The text area is tied to 'deal_input_text'
-                # When voice updates 'deal_input_text', this box updates automatically.
-                # You can then edit it manually, and it stays updated.
                 user_input = st.text_area(
                     "📝 Deal Scenario / Keywords", 
                     key="deal_input_text",
                     height=120, 
                     placeholder="Type here OR use the Voice Button..."
                 )
-                
                 st.markdown("<br>", unsafe_allow_html=True)
-                # Generation ONLY happens when you click this button
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
             # --- AI GENERATION ---
@@ -163,9 +139,11 @@ if uploaded_file is not None:
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (Surgical Fix)
+                # B. PROMPT ENGINEERING
                 genai.configure(api_key=st.session_state.api_key_input)
-                model = genai.GenerativeModel(valid_model_name)
+                
+                # FORCE STABLE MODEL (1,500 Requests/Day)
+                model = genai.GenerativeModel('models/gemini-1.5-flash')
                 
                 prompt = f"""
                 Role: Senior Credit Analyst at Foster Finance.
@@ -179,7 +157,7 @@ if uploaded_file is not None:
 
                 INSTRUCTIONS:
                 1. **Structure:** Output a numbered list (1, 2, 3) followed by a separate paragraph for the 4th point.
-                2. **Tone:** Mimic the sentence structure of the Reference Database exactly. Do not use generic AI language.
+                2. **Tone:** Mimic the sentence structure of the Reference Database exactly.
                 3. **Constraint:** Do NOT use bold headers (e.g., NO "**Requirement:**"). Just start the sentence.
 
                 SPECIFIC MAPPING INSTRUCTIONS:
