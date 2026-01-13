@@ -29,7 +29,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 3. SESSION STATE ---
-# We use this key 'deal_text' to sync the Voice Input with the Text Box
 if 'deal_text' not in st.session_state:
     st.session_state.deal_text = ""
 
@@ -37,23 +36,32 @@ if 'deal_text' not in st.session_state:
 
 @st.cache_data(ttl=3600)
 def get_best_model(api_key):
+    """
+    Finds the correct model name (e.g., gemini-1.5-flash-001) supported by the key.
+    """
     genai.configure(api_key=api_key)
     try:
         models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        priorities = ['models/gemini-1.5-flash-001', 'models/gemini-1.5-flash']
+        # Priority list for speed and multimodal support
+        priorities = ['models/gemini-1.5-flash-001', 'models/gemini-1.5-flash', 'models/gemini-1.5-pro']
         for p in priorities:
             if p in models: return p
         return models[0] if models else 'models/gemini-1.5-flash'
     except:
+        # Fallback if list_models fails
         return 'models/gemini-1.5-flash-001'
 
 @st.cache_data
 def load_database(file):
     return pd.read_csv(file)
 
-def transcribe_audio(audio_bytes, api_key):
+def transcribe_audio(audio_bytes, api_key, model_name):
+    """
+    Uses the SPECIFIC valid model name to transcribe audio.
+    """
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Use the specific model name we found earlier, not a hardcoded string
+    model = genai.GenerativeModel(model_name)
     try:
         response = model.generate_content([
             "Transcribe this audio exactly. It is a credit deal summary. Do not summarize.",
@@ -68,7 +76,6 @@ with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
-    # We bind this input to session_state.api_key_input so we can access it anywhere
     st.text_input("Google API Key", type="password", key="api_key_input", help="Enter Gemini API Key")
     st.markdown("---")
     st.info("🎙️ **Voice:** Click Record -> Speak -> Click Stop. Text will appear automatically.")
@@ -95,29 +102,35 @@ if uploaded_file is not None:
 
             col_mic, col_text = st.columns([1, 4])
             
+            # --- PRE-CALCULATE MODEL NAME ---
+            # We find the working model ONCE and use it for both Voice and Text
+            valid_model_name = 'models/gemini-1.5-flash' # Default
+            if st.session_state.api_key_input:
+                valid_model_name = get_best_model(st.session_state.api_key_input)
+
             # --- VOICE LOGIC ---
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                # Standard usage without 'on_stop'
                 audio = mic_recorder(start_prompt="Record", stop_prompt="Stop", key='recorder')
                 
                 if audio:
-                    # If we have audio, and we haven't processed it yet (or user clicked record again)
                     if st.session_state.api_key_input:
                         with st.spinner("Transcribing..."):
-                            new_text = transcribe_audio(audio['bytes'], st.session_state.api_key_input)
+                            # Pass the VALID model name to the transcriber
+                            new_text = transcribe_audio(
+                                audio['bytes'], 
+                                st.session_state.api_key_input, 
+                                valid_model_name
+                            )
                             
-                            # Update the text box state if the text is new/different
                             if new_text and new_text != st.session_state.deal_text:
                                 st.session_state.deal_text = new_text
-                                st.rerun() # Force page reload to show text in box
+                                st.rerun()
                     elif not st.session_state.api_key_input:
                         st.warning("⚠️ Enter API Key first!")
 
             # --- TEXT BOX LOGIC ---
             with col_text:
-                # We link this box to 'deal_text'. 
-                # If voice updates 'deal_text', this box updates automatically.
                 user_input = st.text_area(
                     "📝 Deal Scenario / Keywords", 
                     key="deal_text",
@@ -143,10 +156,10 @@ if uploaded_file is not None:
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (Surgical Fix)
-                model_name = get_best_model(st.session_state.api_key_input)
+                # B. PROMPT ENGINEERING (Surgical Fix Preserved)
                 genai.configure(api_key=st.session_state.api_key_input)
-                model = genai.GenerativeModel(model_name)
+                # Use the same valid model name here
+                model = genai.GenerativeModel(valid_model_name)
                 
                 prompt = f"""
                 Role: Senior Credit Analyst at Foster Finance.
