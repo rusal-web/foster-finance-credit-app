@@ -24,7 +24,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. CACHED HELPER FUNCTIONS ---
+# --- 3. SESSION STATE INITIALIZATION ---
+if 'deal_text' not in st.session_state:
+    st.session_state.deal_text = ""
+if 'mic_key' not in st.session_state:
+    st.session_state.mic_key = 0  # Helper to reset the mic button
+
+# --- 4. CACHED HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600)
 def get_best_model(api_key):
@@ -55,25 +61,21 @@ def transcribe_audio(audio_bytes, api_key):
     except Exception as e:
         return f"Error: {e}"
 
-# --- 4. SIDEBAR SETUP ---
+# --- 5. SIDEBAR SETUP ---
 with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
     api_key = st.text_input("Google API Key", type="password", help="Enter Gemini API Key")
     st.markdown("---")
-    st.info("🎙️ **Voice Feature Active:** Record your deal summary directly.")
+    st.info("🎙️ **Voice Feature:** Click 'Record', speak your deal, then click 'Stop'.")
 
-# --- 5. MAIN APPLICATION LOGIC ---
+# --- 6. MAIN APPLICATION LOGIC ---
 
 st.title("🏦 Foster Finance Deal Assistant")
 st.markdown("##### AI-Powered Credit Proposal Generator")
 
 uploaded_file = st.file_uploader("📂 Upload Foundation Database (CSV)", type=['csv'])
-
-# Session state to hold text (allows Voice to update the box)
-if 'deal_text' not in st.session_state:
-    st.session_state.deal_text = ""
 
 if uploaded_file is not None:
     try:
@@ -94,11 +96,20 @@ if uploaded_file is not None:
             
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                audio = mic_recorder(start_prompt="Record", stop_prompt="Stop", key='recorder')
+                # Using dynamic key to force reset after recording
+                audio = mic_recorder(
+                    start_prompt="Record", 
+                    stop_prompt="Stop", 
+                    key=f'recorder_{st.session_state.mic_key}'
+                )
+                
                 if audio and api_key:
                     with st.spinner("Transcribing..."):
                         text = transcribe_audio(audio['bytes'], api_key)
+                        
+                        # Update text and force a reset of the mic component
                         st.session_state.deal_text = text
+                        st.session_state.mic_key += 1 
                         st.rerun()
 
             with col_text:
@@ -112,10 +123,10 @@ if uploaded_file is not None:
                 st.markdown("<br>", unsafe_allow_html=True)
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
-            # --- AI LOGIC ---
+            # --- AI LOGIC (Surgical Fix Preserved) ---
             if generate_btn and api_key and user_input:
                 
-                # A. SMART MATCHING (Restored from the working version)
+                # A. SMART MATCHING
                 user_terms = set(user_input.lower().replace(',', '').split())
                 def calculate_score(row):
                     row_text = str(row.values).lower()
@@ -124,11 +135,10 @@ if uploaded_file is not None:
                 df['match_score'] = df.apply(calculate_score, axis=1)
                 matches = df.sort_values(by='match_score', ascending=False).head(3)
                 
-                # Check match quality
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (The Surgical Fix)
+                # B. PROMPT ENGINEERING
                 model_name = get_best_model(api_key)
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel(model_name)
