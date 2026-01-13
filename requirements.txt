@@ -2,3 +2,4 @@ streamlit
 pandas
 google-generativeai
 tenacity
+tabulate
