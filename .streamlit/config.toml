@@ -1,0 +1,16 @@
+[theme]
+# Primary Brand Color (Deep Investment Navy)
+# This controls the color of the "Generate" button and highlights.
+primaryColor = "#0e2f44"
+
+# Background Color (Clean White)
+backgroundColor = "#FFFFFF"
+
+# Sidebar Color (Light Grey for contrast)
+secondaryBackgroundColor = "#F2F4F7"
+
+# Text Color (Dark Charcoal for readability)
+textColor = "#262730"
+
+# Font (Clean and Modern)
+font = "sans serif"
