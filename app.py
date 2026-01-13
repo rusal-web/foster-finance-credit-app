@@ -32,22 +32,44 @@ if 'mic_key' not in st.session_state:
 # --- 4. HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600)
-def get_high_limit_model(api_key):
+def get_high_quota_model(api_key):
     """
-    Forces the use of Gemini 1.5 Flash which typically has 1,500 requests/day free limit.
+    Expert Logic: Prioritizes models known to have High Daily Limits (1,500/day)
+    over newer/experimental models (which often have 20/day limits).
     """
     genai.configure(api_key=api_key)
-    # We strictly force the older, stable model to avoid the 20/day limit of new models
-    return 'models/gemini-1.5-flash'
+    try:
+        # 1. Ask Google what models are valid for this key
+        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # 2. STRICT PRIORITY LIST (High Quota -> Low Quota)
+        # We explicitly look for '1.5-flash' variants first because they are stable.
+        priorities = [
+            'models/gemini-1.5-flash-001', # Gold Standard (Stable, High Quota)
+            'models/gemini-1.5-flash',     # Standard Alias
+            'models/gemini-1.5-pro-001',   # High Intelligence Fallback
+        ]
+        
+        for p in priorities:
+            if p in all_models:
+                return p
+        
+        # 3. Fallback: If 1.5 is missing, take whatever is available (e.g. 2.0 or Experimental)
+        # This is a safety net, but we try to avoid it.
+        return all_models[0] if all_models else 'models/gemini-1.5-flash'
+        
+    except Exception as e:
+        # If the listing fails, default to the safest string
+        return 'models/gemini-1.5-flash-001'
 
 @st.cache_data
 def load_database(file):
     return pd.read_csv(file)
 
-def transcribe_audio(audio_bytes, api_key):
+def transcribe_audio(audio_bytes, api_key, model_name):
     genai.configure(api_key=api_key)
-    # Force 1.5 Flash for transcription to save quota
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
+    # Uses the same High-Quota model found by the helper function
+    model = genai.GenerativeModel(model_name)
     try:
         response = model.generate_content([
             "Transcribe this audio exactly. It is a credit deal summary. Do not summarize.",
@@ -55,7 +77,7 @@ def transcribe_audio(audio_bytes, api_key):
         ])
         return response.text
     except Exception as e:
-        return f"Error: {e}"
+        return None 
 
 # --- 5. SIDEBAR ---
 with st.sidebar:
@@ -84,8 +106,14 @@ if uploaded_file is not None:
             st.error(f"❌ Error: CSV missing headers: {', '.join(missing)}")
         else:
             st.success(f"✅ Database Active: {len(df)} deal scenarios loaded.")
-            st.markdown("---")
+            
+            # --- CRITICAL: DETERMINE MODEL ONCE ---
+            # We determine the High Quota model name HERE and pass it to everything.
+            active_model_name = None
+            if st.session_state.api_key_input:
+                active_model_name = get_high_quota_model(st.session_state.api_key_input)
 
+            st.markdown("---")
             col_mic, col_text = st.columns([1, 4])
             
             # --- VOICE LOGIC ---
@@ -100,16 +128,19 @@ if uploaded_file is not None:
                     )
                 
                 if audio:
-                    if st.session_state.api_key_input:
+                    if active_model_name:
                         with st.spinner("Transcribing..."):
                             new_text = transcribe_audio(
                                 audio['bytes'], 
-                                st.session_state.api_key_input
+                                st.session_state.api_key_input,
+                                active_model_name  # Uses High Quota Model
                             )
                             if new_text:
                                 st.session_state.deal_input_text = new_text
                                 st.session_state.mic_key += 1
                                 st.rerun()
+                            else:
+                                st.error("Transcription failed. Please try again.")
                     elif not st.session_state.api_key_input:
                         st.warning("⚠️ Enter API Key!")
 
@@ -125,7 +156,7 @@ if uploaded_file is not None:
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
             # --- AI GENERATION ---
-            if generate_btn and st.session_state.api_key_input and user_input:
+            if generate_btn and active_model_name and user_input:
                 
                 # A. SMART MATCHING
                 user_terms = set(user_input.lower().replace(',', '').split())
@@ -142,8 +173,8 @@ if uploaded_file is not None:
                 # B. PROMPT ENGINEERING
                 genai.configure(api_key=st.session_state.api_key_input)
                 
-                # FORCE STABLE MODEL (1,500 Requests/Day)
-                model = genai.GenerativeModel('models/gemini-1.5-flash')
+                # USE VALIDATED MODEL
+                model = genai.GenerativeModel(active_model_name)
                 
                 prompt = f"""
                 Role: Senior Credit Analyst at Foster Finance.
