@@ -19,7 +19,7 @@ st.markdown("""
         h1 { color: #0e2f44; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; }
         .stTextArea textarea { background-color: #f8f9fa; border: 1px solid #dcdcdc; }
         .stSuccess { background-color: #d4edda; color: #155724; }
-        /* Make the mic button prominent */
+        /* Mic button styling */
         button[kind="secondary"] { 
             border-radius: 20px; 
             border: 1px solid #ccc; 
@@ -28,7 +28,12 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 3. CACHED HELPER FUNCTIONS ---
+# --- 3. SESSION STATE ---
+# We use this key 'deal_text' to sync the Voice Input with the Text Box
+if 'deal_text' not in st.session_state:
+    st.session_state.deal_text = ""
+
+# --- 4. HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600)
 def get_best_model(api_key):
@@ -47,7 +52,6 @@ def load_database(file):
     return pd.read_csv(file)
 
 def transcribe_audio(audio_bytes, api_key):
-    """Sends audio to Gemini for transcription."""
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
     try:
@@ -59,34 +63,17 @@ def transcribe_audio(audio_bytes, api_key):
     except Exception as e:
         return f"Error: {e}"
 
-# --- 4. CALLBACK FOR VOICE ---
-# This function runs immediately when the recording stops
-def voice_callback():
-    if st.session_state.my_recorder_output:
-        audio_bytes = st.session_state.my_recorder_output['bytes']
-        
-        # Check API Key before transcribing
-        if st.session_state.api_key_input:
-            # Transcribe
-            text = transcribe_audio(audio_bytes, st.session_state.api_key_input)
-            
-            # DIRECTLY UPDATE THE TEXT AREA WIDGET STATE
-            # This forces the text box to show the new text immediately
-            st.session_state.deal_input_area = text
-        else:
-            st.warning("⚠️ Please enter API Key first!")
-
-# --- 5. SIDEBAR SETUP ---
+# --- 5. SIDEBAR ---
 with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
-    # Bind API Key to session state so callback can access it
+    # We bind this input to session_state.api_key_input so we can access it anywhere
     st.text_input("Google API Key", type="password", key="api_key_input", help="Enter Gemini API Key")
     st.markdown("---")
-    st.info("🎙️ **Voice Tip:** Speak clearly. The text will appear automatically when you click 'Stop'.")
+    st.info("🎙️ **Voice:** Click Record -> Speak -> Click Stop. Text will appear automatically.")
 
-# --- 6. MAIN APPLICATION LOGIC ---
+# --- 6. MAIN LOGIC ---
 
 st.title("🏦 Foster Finance Deal Assistant")
 st.markdown("##### AI-Powered Credit Proposal Generator")
@@ -106,33 +93,42 @@ if uploaded_file is not None:
             st.success(f"✅ Database Active: {len(df)} deal scenarios loaded.")
             st.markdown("---")
 
-            # --- VOICE & TEXT INPUT ---
             col_mic, col_text = st.columns([1, 4])
             
+            # --- VOICE LOGIC ---
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                # Using the callback ensures the update happens BEFORE the page reloads
-                mic_recorder(
-                    start_prompt="Record", 
-                    stop_prompt="Stop", 
-                    key='my_recorder_output',
-                    on_stop=voice_callback  # This is the magic link
-                )
+                # Standard usage without 'on_stop'
+                audio = mic_recorder(start_prompt="Record", stop_prompt="Stop", key='recorder')
+                
+                if audio:
+                    # If we have audio, and we haven't processed it yet (or user clicked record again)
+                    if st.session_state.api_key_input:
+                        with st.spinner("Transcribing..."):
+                            new_text = transcribe_audio(audio['bytes'], st.session_state.api_key_input)
+                            
+                            # Update the text box state if the text is new/different
+                            if new_text and new_text != st.session_state.deal_text:
+                                st.session_state.deal_text = new_text
+                                st.rerun() # Force page reload to show text in box
+                    elif not st.session_state.api_key_input:
+                        st.warning("⚠️ Enter API Key first!")
 
+            # --- TEXT BOX LOGIC ---
             with col_text:
-                # We give the text area a specific key 'deal_input_area'
-                # The callback updates this key directly
+                # We link this box to 'deal_text'. 
+                # If voice updates 'deal_text', this box updates automatically.
                 user_input = st.text_area(
                     "📝 Deal Scenario / Keywords", 
+                    key="deal_text",
                     height=120, 
-                    key="deal_input_area", 
-                    placeholder="Type here OR use the Voice Button... (Text will appear after you click Stop)"
+                    placeholder="Type here OR use the Voice Button..."
                 )
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
-            # --- AI LOGIC (Surgical Logic Preserved) ---
+            # --- AI GENERATION ---
             if generate_btn and st.session_state.api_key_input and user_input:
                 
                 # A. SMART MATCHING
@@ -147,7 +143,7 @@ if uploaded_file is not None:
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (The "Surgical Fix" you approved)
+                # B. PROMPT ENGINEERING (Surgical Fix)
                 model_name = get_best_model(st.session_state.api_key_input)
                 genai.configure(api_key=st.session_state.api_key_input)
                 model = genai.GenerativeModel(model_name)
@@ -176,7 +172,6 @@ if uploaded_file is not None:
                 Generate strict Markdown output.
                 """
                 
-                # C. GENERATION
                 try:
                     with st.spinner("🤖 Dr. Foster is analyzing..."):
                         @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
