@@ -1,10 +1,8 @@
 import streamlit as st
 import pandas as pd
 import google.generativeai as genai
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-from google.api_core import exceptions
+from tenacity import retry, stop_after_attempt, wait_exponential
 from streamlit_mic_recorder import mic_recorder
-import io
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(
@@ -13,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. CUSTOM CSS (Premium Branding) ---
+# --- 2. CUSTOM CSS (The Premium Branding) ---
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { background-color: #0e2f44; }
@@ -21,8 +19,8 @@ st.markdown("""
         h1 { color: #0e2f44; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; }
         .stTextArea textarea { background-color: #f8f9fa; border: 1px solid #dcdcdc; }
         .stSuccess { background-color: #d4edda; color: #155724; }
-        /* Style the Mic Button to look professional */
-        button[kind="secondary"] { border-radius: 20px; }
+        /* Professional Mic Button styling */
+        button[kind="secondary"] { border-radius: 20px; border: 1px solid #ccc; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -45,32 +43,26 @@ def load_database(file):
     return pd.read_csv(file)
 
 def transcribe_audio(audio_bytes, api_key):
-    """Sends audio directly to Gemini to convert to text."""
+    """Sends audio to Gemini for transcription."""
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    # Simple prompt for accurate transcription
-    prompt = "Transcribe this audio exactly. It is a credit deal summary for a finance application. Do not summarize, just transcribe."
-    
     try:
-        # Create a "blob" for the audio to send to Gemini
         response = model.generate_content([
-            prompt,
+            "Transcribe this audio exactly. It is a credit deal summary. Do not summarize.",
             {"mime_type": "audio/wav", "data": audio_bytes}
         ])
         return response.text
     except Exception as e:
-        return f"Error transcribing: {e}"
+        return f"Error: {e}"
 
 # --- 4. SIDEBAR SETUP ---
 with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
-    api_key = st.text_input("Google API Key", type="password", help="Enter your Gemini API Key")
-    
+    api_key = st.text_input("Google API Key", type="password", help="Enter Gemini API Key")
     st.markdown("---")
-    st.info("🎙️ **New:** Use the Voice Recorder to dictate your deal!")
+    st.info("🎙️ **Voice Feature Active:** Record your deal summary directly.")
 
 # --- 5. MAIN APPLICATION LOGIC ---
 
@@ -79,7 +71,7 @@ st.markdown("##### AI-Powered Credit Proposal Generator")
 
 uploaded_file = st.file_uploader("📂 Upload Foundation Database (CSV)", type=['csv'])
 
-# Initialize session state for the text input
+# Session state to hold text (allows Voice to update the box)
 if 'deal_text' not in st.session_state:
     st.session_state.deal_text = ""
 
@@ -92,41 +84,38 @@ if uploaded_file is not None:
         missing = [col for col in required_columns if col not in df.columns]
         
         if missing:
-            st.error(f"❌ Error: Your CSV is missing headers: {', '.join(missing)}")
+            st.error(f"❌ Error: CSV missing headers: {', '.join(missing)}")
         else:
             st.success(f"✅ Database Active: {len(df)} deal scenarios loaded.")
             st.markdown("---")
 
-            # --- VOICE INPUT SECTION ---
+            # --- VOICE & TEXT INPUT ---
             col_mic, col_text = st.columns([1, 4])
             
             with col_mic:
                 st.write("🎙️ **Voice Input**")
-                # The Mic Recorder Component
-                audio = mic_recorder(start_prompt="Record Deal", stop_prompt="Stop", key='recorder')
-                
+                audio = mic_recorder(start_prompt="Record", stop_prompt="Stop", key='recorder')
                 if audio and api_key:
                     with st.spinner("Transcribing..."):
-                        # Send audio to Gemini
-                        transcription = transcribe_audio(audio['bytes'], api_key)
-                        st.session_state.deal_text = transcription
-                        st.rerun() # Refresh to show text in box
+                        text = transcribe_audio(audio['bytes'], api_key)
+                        st.session_state.deal_text = text
+                        st.rerun()
 
             with col_text:
-                # The text area is bound to session_state so voice updates it
                 user_input = st.text_area(
                     "📝 Deal Scenario / Keywords", 
                     value=st.session_state.deal_text,
                     height=120, 
-                    placeholder="Type here OR use the Voice Button on the left..."
+                    placeholder="e.g., Federico and Tristan purchasing in Wollstonecraft for $2.1M..."
                 )
                 
+                st.markdown("<br>", unsafe_allow_html=True)
                 generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
             # --- AI LOGIC ---
             if generate_btn and api_key and user_input:
                 
-                # A. SMART MATCHING
+                # A. SMART MATCHING (Restored from the working version)
                 user_terms = set(user_input.lower().replace(',', '').split())
                 def calculate_score(row):
                     row_text = str(row.values).lower()
@@ -135,10 +124,11 @@ if uploaded_file is not None:
                 df['match_score'] = df.apply(calculate_score, axis=1)
                 matches = df.sort_values(by='match_score', ascending=False).head(3)
                 
-                context_type = "General Logic" if matches['match_score'].max() == 0 else "Historic Matches"
+                # Check match quality
+                context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (Updated for Richer Bullet 1)
+                # B. PROMPT ENGINEERING (The Surgical Fix)
                 model_name = get_best_model(api_key)
                 genai.configure(api_key=api_key)
                 model = genai.GenerativeModel(model_name)
@@ -155,19 +145,14 @@ if uploaded_file is not None:
 
                 INSTRUCTIONS:
                 1. **Structure:** Output a numbered list (1, 2, 3) followed by a separate paragraph for the 4th point.
-                2. **Tone:** Professional, persuasive, and tailored. 
-                
-                CRITICAL INSTRUCTION FOR BULLET 1 (Client Requirements):
-                - Do NOT just repeat the user input. **EXPAND** this section. 
-                - If the input is brief, INFER standard professional requirements relevant to this deal type (e.g., maximizing borrowing capacity, seeking competitive pricing, structure flexibility, or specific policy exceptions).
-                - Make Bullet 1 feel personalized and comprehensive, even if the input was short.
+                2. **Tone:** Mimic the sentence structure of the Reference Database exactly. Do not use generic AI language.
+                3. **Constraint:** Do NOT use bold headers (e.g., NO "**Requirement:**"). Just start the sentence.
 
-                OUTPUT MAPPING:
-                1. [Expanded 'Client Requirements']
-                2. [Sentence mapping to 'Client Objectives']
-                3. [Sentence mapping to 'Product Features']
-
-                4. [Paragraph mapping to 'Why this Product was Selected']
+                SPECIFIC MAPPING INSTRUCTIONS:
+                * **Bullet 1 (Requirements):** Mimic the Reference Database sentence structure, BUT add 10-15% more detail by explicitly stating the likely credit priority (e.g., "prioritising competitive rates" or "maximum borrowing") if not already stated.
+                * **Bullet 2 (Objectives):** Strictly mimic the 'Client Objectives' column style.
+                * **Bullet 3 (Features):** Strictly mimic the 'Product Features' column style.
+                * **Point 4 (Selection):** Strictly mimic the 'Why this Product was Selected' column logic.
 
                 Generate strict Markdown output.
                 """
