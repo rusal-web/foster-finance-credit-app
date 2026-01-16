@@ -10,7 +10,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. CUSTOM CSS (Premium Branding) ---
+# --- 2. CUSTOM CSS ---
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { background-color: #0e2f44; }
@@ -24,25 +24,6 @@ st.markdown("""
 
 # --- 3. HELPER FUNCTIONS ---
 
-@st.cache_data(ttl=3600)
-def get_high_quota_model(api_key):
-    """
-    Forces the use of the '1.5 Flash' model which has the highest free tier limits.
-    """
-    genai.configure(api_key=api_key)
-    try:
-        all_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        
-        # Priority: Stable 1.5 Flash -> Standard 1.5 Flash -> Fallback
-        priorities = ['models/gemini-1.5-flash-001', 'models/gemini-1.5-flash']
-        
-        for p in priorities:
-            if p in all_models: return p
-            
-        return 'models/gemini-1.5-flash'
-    except:
-        return 'models/gemini-1.5-flash-001'
-
 @st.cache_data
 def load_database(file):
     return pd.read_csv(file)
@@ -52,10 +33,13 @@ with st.sidebar:
     st.image("https://placehold.co/200x80/0e2f44/ffffff/png?text=Foster+Finance", use_column_width=True)
     st.markdown("---")
     st.header("⚙️ Configuration")
-    # Bind directly to session state for reliability
-    api_key = st.text_input("Google API Key", type="password", help="Enter Gemini API Key")
+    
+    # Secure API Key Input
+    api_key = st.text_input("Google API Key", type="password", key="api_key_input", help="Enter your NEW Project Key here")
+    
     st.markdown("---")
-    st.info("💡 **Tip:** Use a fresh Google Project key to reset your daily quota.")
+    st.success("✅ **System Status:** Stable")
+    st.caption("Model: Gemini 1.5 Flash (Hard-coded)")
 
 # --- 5. MAIN LOGIC ---
 
@@ -76,27 +60,20 @@ if uploaded_file is not None:
             st.error(f"❌ Error: CSV missing headers: {', '.join(missing)}")
         else:
             st.success(f"✅ Database Active: {len(df)} deal scenarios loaded.")
-            
-            # --- MODEL SELECTION ---
-            # We determine the model name ONCE.
-            active_model_name = None
-            if api_key:
-                active_model_name = get_high_quota_model(api_key)
-
             st.markdown("---")
             
-            # --- TEXT INPUT (Simplified) ---
+            # --- TEXT INPUT ---
             user_input = st.text_area(
                 "📝 Deal Scenario / Keywords", 
                 height=150, 
-                placeholder="E.g. Federico and Tristan purchasing in Wollstonecraft for $2.1M. They need to refinance existing portfolio..."
+                placeholder="E.g., Federico and Tristan purchasing in Wollstonecraft for $2.1M. They need to refinance existing portfolio..."
             )
             
             st.markdown("<br>", unsafe_allow_html=True)
             generate_btn = st.button("✨ Generate Proposal", type="primary", use_container_width=True)
 
             # --- AI GENERATION ---
-            if generate_btn and active_model_name and user_input:
+            if generate_btn and api_key and user_input:
                 
                 # A. SMART MATCHING
                 user_terms = set(user_input.lower().replace(',', '').split())
@@ -110,37 +87,40 @@ if uploaded_file is not None:
                 context_type = "Historic Matches" if matches['match_score'].max() > 0 else "General Logic"
                 context_data = matches[required_columns].to_markdown(index=False)
 
-                # B. PROMPT ENGINEERING (Your Approved Surgical Logic)
-                genai.configure(api_key=api_key)
-                model = genai.GenerativeModel(active_model_name)
-                
-                prompt = f"""
-                Role: Senior Credit Analyst at Foster Finance.
-                Task: Write a deal summary ADAPTING the style of the Reference Database to the User's new scenario.
-
-                USER INPUT (New Deal Details): 
-                "{user_input}"
-
-                REFERENCE DATABASE ({context_type}):
-                {context_data}
-
-                INSTRUCTIONS:
-                1. **Structure:** Output a numbered list (1, 2, 3) followed by a separate paragraph for the 4th point.
-                2. **Tone:** Mimic the sentence structure of the Reference Database exactly.
-                3. **Constraint:** Do NOT use bold headers (e.g., NO "**Requirement:**"). Just start the sentence.
-
-                SPECIFIC MAPPING INSTRUCTIONS:
-                * **Bullet 1 (Requirements):** Mimic the Reference Database sentence structure, BUT add 10-15% more detail by explicitly stating the likely credit priority (e.g., "prioritising competitive rates" or "maximum borrowing") if not already stated.
-                * **Bullet 2 (Objectives):** Strictly mimic the 'Client Objectives' column style.
-                * **Bullet 3 (Features):** Strictly mimic the 'Product Features' column style.
-                * **Point 4 (Selection):** Strictly mimic the 'Why this Product was Selected' column logic.
-
-                Generate strict Markdown output.
-                """
-                
+                # B. PROMPT ENGINEERING
                 try:
+                    genai.configure(api_key=api_key)
+                    
+                    # --- THE SAFETY LOCK ---
+                    # We force the exact stable model ID. 
+                    # If this fails, the key is invalid. No guessing.
+                    model = genai.GenerativeModel('models/gemini-1.5-flash')
+                    
+                    prompt = f"""
+                    Role: Senior Credit Analyst at Foster Finance.
+                    Task: Write a deal summary ADAPTING the style of the Reference Database to the User's new scenario.
+
+                    USER INPUT (New Deal Details): 
+                    "{user_input}"
+
+                    REFERENCE DATABASE ({context_type}):
+                    {context_data}
+
+                    INSTRUCTIONS:
+                    1. **Structure:** Output a numbered list (1, 2, 3) followed by a separate paragraph for the 4th point.
+                    2. **Tone:** Mimic the sentence structure of the Reference Database exactly.
+                    3. **Constraint:** Do NOT use bold headers (e.g., NO "**Requirement:**"). Just start the sentence.
+
+                    SPECIFIC MAPPING INSTRUCTIONS:
+                    * **Bullet 1 (Requirements):** Mimic the Reference Database sentence structure, BUT add 10-15% more detail by explicitly stating the likely credit priority (e.g., "prioritising competitive rates" or "maximum borrowing") if not already stated.
+                    * **Bullet 2 (Objectives):** Strictly mimic the 'Client Objectives' column style.
+                    * **Bullet 3 (Features):** Strictly mimic the 'Product Features' column style.
+                    * **Point 4 (Selection):** Strictly mimic the 'Why this Product was Selected' column logic.
+
+                    Generate strict Markdown output.
+                    """
+                    
                     with st.spinner("🤖 Dr. Foster is analyzing..."):
-                        # Basic retry logic for transient errors
                         @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
                         def run_ai():
                             return model.generate_content(prompt).text
@@ -151,9 +131,12 @@ if uploaded_file is not None:
                         st.markdown(response)
 
                 except Exception as e:
-                    # Clear error handling that tells you if it's a quota issue
-                    if "429" in str(e) or "ResourceExhausted" in str(e):
-                        st.error("🚨 Daily Limit Reached. Please use a new API Key from a different Google Project.")
+                    # Precise Error Handling
+                    err_msg = str(e)
+                    if "404" in err_msg:
+                        st.error("🚨 Key Error: This specific API key cannot access 'Gemini 1.5 Flash'. Ensure you created it in a standard Google AI Studio project.")
+                    elif "429" in err_msg or "ResourceExhausted" in err_msg:
+                        st.error("🚨 Quota Error: This new key has also hit a limit. Check Google Cloud Billing.")
                     else:
                         st.error(f"Analysis Error: {e}")
 
