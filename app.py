@@ -10,14 +10,38 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. CUSTOM CSS ---
+# --- 2. CUSTOM CSS (High Contrast & Readability) ---
 st.markdown("""
     <style>
-        [data-testid="stSidebar"] { background-color: #0e2f44; }
-        [data-testid="stSidebar"] * { color: #ecf0f1 !important; }
+        /* Main Sidebar Background */
+        [data-testid="stSidebar"] { 
+            background-color: #0e2f44; 
+        }
+        
+        /* FORCE all sidebar text to be white and readable */
+        [data-testid="stSidebar"] p, 
+        [data-testid="stSidebar"] span, 
+        [data-testid="stSidebar"] label, 
+        [data-testid="stSidebar"] div { 
+            color: #ffffff !important; 
+        }
+        
+        /* Input fields in sidebar (Text Input & Select Box) */
+        [data-testid="stSidebar"] input {
+            color: #0e2f44 !important; /* Text inside box is dark */
+            background-color: #ffffff !important; /* Box background is white */
+        }
+        
+        /* Headers */
         h1 { color: #0e2f44; font-family: 'Helvetica Neue', sans-serif; font-weight: 700; }
+        
+        /* Text Area Styling */
         .stTextArea textarea { background-color: #f8f9fa; border: 1px solid #dcdcdc; }
-        .stSuccess { background-color: #d4edda; color: #155724; }
+        
+        /* Success Message Styling */
+        .stSuccess { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+        
+        /* Button Width */
         div[data-testid="stVerticalBlock"] > button { width: 100%; }
     </style>
 """, unsafe_allow_html=True)
@@ -26,13 +50,11 @@ st.markdown("""
 
 def get_available_models(api_key):
     """
-    Directly asks Google for the list of models this key can access.
-    Returns a list of names for the user to pick from.
+    Fetches the real list of models from Google.
     """
     genai.configure(api_key=api_key)
     try:
         models = genai.list_models()
-        # Filter only for models that can generate content (text)
         return [m.name for m in models if 'generateContent' in m.supported_generation_methods]
     except Exception as e:
         return []
@@ -47,34 +69,42 @@ with st.sidebar:
     st.markdown("---")
     st.header("⚙️ Configuration")
     
-    # 1. Enter Key
+    # 1. API Key Input
     api_key = st.text_input("Google API Key", type="password", key="api_key_input")
     
     selected_model = None
     
-    # 2. Connection Test & Model List
+    # 2. Smart Model Selection
     if api_key:
         available_models = get_available_models(api_key)
         
         if available_models:
-            st.success(f"✅ Key Verified! Found {len(available_models)} models.")
+            st.success(f"✅ Connected! Found {len(available_models)} models.")
             
-            # Try to set default to a stable Flash model
+            # --- AUTO-SELECT LOGIC (Gemini 3 First) ---
             default_ix = 0
+            
+            # Priority 1: Gemini 3.0 Flash (The 2026 Standard)
             for i, m in enumerate(available_models):
-                if 'gemini-1.5-flash' in m:
+                if 'gemini-3.0-flash' in m or 'gemini-3-flash' in m:
                     default_ix = i
                     break
+            else:
+                # Priority 2: Gemini 1.5 Flash (The Stable Fallback)
+                for i, m in enumerate(available_models):
+                    if 'gemini-1.5-flash' in m:
+                        default_ix = i
+                        break
             
-            # 3. THE MANUAL OVERRIDE (User Picks the Model)
+            # 3. Manual Override Dropdown
             selected_model = st.selectbox(
-                "Select Model (Manual Override)",
+                "Active Model (Override)",
                 available_models,
                 index=default_ix,
-                help="If one fails, try another from this list."
+                help="Gemini 3 is selected by default. Use this to switch to 1.5 if needed."
             )
         else:
-            st.error("❌ Key Error: Connection failed or no models found. Check if 'Generative Language API' is enabled in Google Cloud Console.")
+            st.error("❌ Connection Failed. Check Key.")
 
 # --- 5. MAIN LOGIC ---
 
@@ -127,8 +157,6 @@ if uploaded_file is not None:
                     # B. PROMPT ENGINEERING
                     try:
                         genai.configure(api_key=api_key)
-                        
-                        # USE THE EXACT MODEL THE USER SELECTED
                         model = genai.GenerativeModel(selected_model)
                         
                         prompt = f"""
@@ -155,7 +183,7 @@ if uploaded_file is not None:
                         Generate strict Markdown output.
                         """
                         
-                        with st.spinner(f"🤖 Analyzing using {selected_model}..."):
+                        with st.spinner(f"🤖 Analyzing with {selected_model}..."):
                             @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
                             def run_ai():
                                 return model.generate_content(prompt).text
@@ -166,14 +194,16 @@ if uploaded_file is not None:
                             st.markdown(response)
 
                     except Exception as e:
-                        # Error Decoding
+                        # --- CUSTOM ERROR HANDLING ---
                         err_msg = str(e)
-                        if "404" in err_msg:
-                            st.error(f"🚨 Model Error: The model '{selected_model}' is not accessible. Please pick a different one from the list.")
-                        elif "429" in err_msg:
-                            st.error("🚨 Limit Reached: Please create a NEW Project Key.")
+                        st.error("🚨 Generation Failed.")
+                        
+                        if "404" in err_msg or "NotFound" in err_msg:
+                            st.warning(f"ℹ️ **Action Required:** The model '{selected_model}' is not currently available for this key. \n\n👉 **Please go to the Sidebar > 'Active Model' and select 'Gemini 1.5 Flash' to continue.**")
+                        elif "429" in err_msg or "ResourceExhausted" in err_msg:
+                            st.warning("ℹ️ **Action Required:** Daily Limit Reached. Please create a NEW Project Key or select a different model in the sidebar.")
                         else:
-                            st.error(f"Analysis Error: {e}")
+                            st.error(f"Technical Error: {e}")
 
             elif generate_btn and not api_key:
                 st.warning("⚠️ Please enter your API Key in the sidebar.")
