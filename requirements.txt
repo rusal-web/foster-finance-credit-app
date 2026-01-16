@@ -3,4 +3,3 @@ pandas
 google-generativeai
 tenacity
 tabulate
-streamlit-mic-recorder
